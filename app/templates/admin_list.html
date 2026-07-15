@@ -1,0 +1,5 @@
+{% extends "base.html" %}{% block content %}<h1>Ultimate Parser Admin</h1>
+<div class="card"><a class="btn" href="/admin/configs/new">+ Новый парсер</a></div>
+<div class="card"><table><tr><th>ID</th><th>Название</th><th>URL</th><th>Enabled</th><th>Actions</th></tr>
+{% for c in configs %}<tr><td>{{c.id}}</td><td>{{c.name}}</td><td class="muted">{{c.start_url}}</td><td>{{c.enabled}}</td><td><a href="/admin/configs/{{c.id}}/edit">edit</a> · <form style="display:inline" method="post" action="/admin/configs/{{c.id}}/parse"><button>run</button></form></td></tr>{% endfor %}
+</table></div>{% endblock %}

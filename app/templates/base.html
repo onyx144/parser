@@ -1,0 +1,6 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ title or "Ultimate Parser" }}</title>
+<style>
+body{font-family:Arial,sans-serif;margin:0;background:#f6f6f6;color:#222}.wrap{max-width:1180px;margin:0 auto;padding:24px}nav{background:#111;color:#fff;padding:14px 24px}nav a{color:#fff;margin-right:18px;text-decoration:none}.card{background:#fff;border-radius:12px;padding:18px;margin:16px 0;box-shadow:0 2px 12px #0001}label{display:block;font-weight:700;margin-top:12px}input,textarea,select{width:100%;box-sizing:border-box;padding:10px;border:1px solid #ccc;border-radius:8px}button,.btn{display:inline-block;background:#111;color:#fff;border:0;border-radius:8px;padding:10px 14px;text-decoration:none;cursor:pointer;margin-top:12px}.muted{color:#777;font-size:13px}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #eee;padding:8px;text-align:left}</style>
+</head><body><nav><a href="/admin">Configs</a><a href="/docs">API Docs</a><a href="/health">Health</a></nav><div class="wrap">{% block content %}{% endblock %}</div></body></html>

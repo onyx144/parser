@@ -1,0 +1,17 @@
+{% extends "base.html" %}{% block content %}<h1>{{ 'Редактировать' if config else 'Новый' }} парсер</h1>
+<form class="card" method="post" action="{{ action }}">
+<label>Название</label><input name="name" value="{{ config.name if config else 'Parser 1' }}" required>
+<label>Включен</label><select name="enabled"><option value="true" {% if not config or config.enabled %}selected{% endif %}>true</option><option value="false" {% if config and not config.enabled %}selected{% endif %}>false</option></select>
+<label>Start URL</label><input name="start_url" value="{{ config.start_url if config else 'https://example.com/catalog' }}" required>
+<label>Pagination container selector</label><input name="pagination_container_selector" value="{{ config.pagination_container_selector if config else '.pagination' }}">
+<label>Pagination link selector</label><input name="pagination_link_selector" value="{{ config.pagination_link_selector if config else 'a' }}">
+<label>Max pages</label><input type="number" name="max_pages" value="{{ config.max_pages if config else 5 }}">
+<label>Product link selector</label><input name="product_link_selector" value="{{ config.product_link_selector if config else 'a.product-card' }}" required>
+<label>Product description selector</label><input name="product_description_selector" value="{{ config.product_description_selector if config else '.description' }}" required>
+<label>AI prompt file</label><input name="ai_prompt_file" value="{{ config.ai_prompt_file if config else 'prompts/default_product_prompt.txt' }}" required>
+<label>Duplicate stop limit</label><input type="number" name="duplicate_stop_limit" value="{{ config.duplicate_stop_limit if config else 10 }}">
+<label>Request timeout seconds</label><input type="number" name="request_timeout_seconds" value="{{ config.request_timeout_seconds if config else 25 }}">
+<label>Playwright fallback</label><select name="use_playwright_fallback"><option value="true" {% if not config or config.use_playwright_fallback %}selected{% endif %}>true</option><option value="false" {% if config and not config.use_playwright_fallback %}selected{% endif %}>false</option></select>
+<label>Telegram enabled</label><select name="telegram_enabled"><option value="false" {% if not config or not config.telegram_enabled %}selected{% endif %}>false</option><option value="true" {% if config and config.telegram_enabled %}selected{% endif %}>true</option></select>
+<button>Сохранить</button> <a class="btn" href="/admin">Назад</a>
+</form>{% endblock %}
