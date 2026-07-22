@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
@@ -22,6 +22,7 @@ class ParserConfig(Base):
     request_timeout_seconds: Mapped[int] = mapped_column(Integer, default=25)
     use_playwright_fallback: Mapped[bool] = mapped_column(Boolean, default=True)
     telegram_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    telegram_chat_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

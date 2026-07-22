@@ -1,5 +1,5 @@
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from bs4 import BeautifulSoup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,10 +11,54 @@ from app.services.telegram import send_product_result
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+
 def absolute_url(base: str, href: str | None) -> str | None:
     if not href:
         return None
     return urljoin(base, href.strip())
+
+
+def looks_like_rss(url: str, payload: str) -> bool:
+    head = payload[:500].lower()
+    return url.lower().split("?", 1)[0].endswith(".rss") or "<rss" in head or "<channel" in head
+
+
+def clean_html_text(value: str | None) -> str:
+    if not value:
+        return ""
+    soup = BeautifulSoup(value, "lxml")
+    return soup.get_text("\n", strip=True)
+
+
+def extract_rss_items(xml_text: str, page_url: str) -> list[dict[str, str]]:
+    soup = BeautifulSoup(xml_text, "xml")
+    items: list[dict[str, str]] = []
+    for item in soup.select("item"):
+        link_node = item.find("link")
+        title_node = item.find("title")
+        desc_node = item.find("description")
+        pub_node = item.find("pubDate")
+        category_nodes = item.find_all("category")
+        link = absolute_url(page_url, link_node.get_text(strip=True) if link_node else None)
+        if not link:
+            continue
+        # Drop RSS analytics params so duplicates are stable.
+        canonical_link = link.split("?", 1)[0]
+        title = title_node.get_text(" ", strip=True) if title_node else ""
+        description = clean_html_text(desc_node.get_text("\n", strip=True) if desc_node else "")
+        pub_date = pub_node.get_text(" ", strip=True) if pub_node else ""
+        categories = [node.get_text(" ", strip=True) for node in category_nodes if node.get_text(" ", strip=True)]
+        items.append(
+            {
+                "url": canonical_link,
+                "title": title,
+                "description": description,
+                "pub_date": pub_date,
+                "categories": ", ".join(categories),
+            }
+        )
+    return items
+
 
 def extract_product_links(html: str, page_url: str, selector: str) -> list[str]:
     soup = BeautifulSoup(html, "lxml")
@@ -26,36 +70,89 @@ def extract_product_links(html: str, page_url: str, selector: str) -> list[str]:
             href = child.get("href") if child else None
         full = absolute_url(page_url, href)
         if full and full not in links:
-            links.append(full)
+            links.append(full.split("?", 1)[0])
     return links
+
 
 def extract_description(html: str, selector: str) -> str:
     soup = BeautifulSoup(html, "lxml")
     node = soup.select_one(selector)
     return node.get_text("\n", strip=True) if node else ""
 
+
+def increment_page_param(current_url: str, next_page_number: int) -> str:
+    """Build next list URL by changing only page=N and preserving all repeated skills[] params."""
+    parts = urlsplit(current_url)
+    query_pairs = parse_qsl(parts.query, keep_blank_values=True)
+    found_page = False
+    new_pairs: list[tuple[str, str]] = []
+    for key, value in query_pairs:
+        if key == "page":
+            new_pairs.append((key, str(next_page_number)))
+            found_page = True
+        else:
+            new_pairs.append((key, value))
+    if not found_page:
+        new_pairs.insert(0, ("page", str(next_page_number)))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(new_pairs, doseq=True), parts.fragment))
+
+
 def next_page_url(html: str, current_url: str, cfg: ParserConfig, next_page_number: int) -> str | None:
-    if not cfg.pagination_container_selector or not cfg.pagination_link_selector:
-        return None
-    soup = BeautifulSoup(html, "lxml")
-    container = soup.select_one(cfg.pagination_container_selector)
-    if not container:
-        return None
-    links = container.select(cfg.pagination_link_selector)
-    for link in links:
-        if link.get_text(" ", strip=True) == str(next_page_number):
-            return absolute_url(current_url, link.get("href"))
-    for link in links:
-        href = link.get("href") or ""
-        if f"page={next_page_number}" in href or f"/page/{next_page_number}" in href:
-            return absolute_url(current_url, href)
+    if cfg.pagination_container_selector and cfg.pagination_link_selector:
+        soup = BeautifulSoup(html, "lxml")
+        container = soup.select_one(cfg.pagination_container_selector)
+        if container:
+            links = container.select(cfg.pagination_link_selector)
+            for link in links:
+                if link.get_text(" ", strip=True) == str(next_page_number):
+                    return absolute_url(current_url, link.get("href"))
+            for link in links:
+                href = link.get("href") or ""
+                if f"page={next_page_number}" in href or f"/page/{next_page_number}" in href:
+                    return absolute_url(current_url, href)
+
+    # Fallback for Freelancehunt filtered lists: /projects?page=N&skills[]=...
+    if "freelancehunt.com/projects" in current_url:
+        return increment_page_param(current_url, next_page_number)
     return None
+
 
 def load_prompt(path_str: str) -> str:
     path = Path(path_str)
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     return path.read_text(encoding="utf-8")
+
+
+async def create_product_from_description(
+    db: AsyncSession,
+    cfg: ParserConfig,
+    run: ParseRun,
+    *,
+    product_url: str,
+    source_page_url: str,
+    description: str,
+    prompt_template: str,
+) -> None:
+    product = Product(config_id=cfg.id, product_url=product_url, source_page_url=source_page_url, status="processing")
+    db.add(product)
+    await db.commit()
+    await db.refresh(product)
+
+    try:
+        ai_prompt = render_prompt(prompt_template, product_url=product_url, description=description)
+        ai_answer = await generate_ai_response(ai_prompt)
+        product.description_text = description
+        product.ai_response = ai_answer
+        product.status = "complete"
+        run.products_created += 1
+        if cfg.telegram_enabled:
+            product.telegram_sent = await send_product_result(product_url, ai_answer, description, chat_ids=cfg.telegram_chat_ids)
+    except Exception as exc:
+        product.status = "error"
+        product.error = str(exc)
+    await db.commit()
+
 
 async def run_parser(db: AsyncSession, config_id: int) -> int:
     cfg = await db.get(ParserConfig, config_id)
@@ -77,6 +174,38 @@ async def run_parser(db: AsyncSession, config_id: int) -> int:
         for page_number in range(1, max(cfg.max_pages, 1) + 1):
             html = await fetch_html(current_url, cfg.request_timeout_seconds, cfg.use_playwright_fallback)
             run.pages_seen += 1
+
+            if looks_like_rss(current_url, html):
+                rss_items = extract_rss_items(html, current_url)
+                for item in rss_items:
+                    product_url = item["url"]
+                    run.products_seen += 1
+                    existing = await db.scalar(select(Product).where(Product.product_url == product_url))
+                    if existing:
+                        duplicate_streak += 1
+                        run.products_skipped_existing += 1
+                        if duplicate_streak >= (cfg.duplicate_stop_limit or 10):
+                            run.status = "complete"
+                            run.stopped_reason = f"duplicate_streak_reached_{duplicate_streak}"
+                            await db.commit()
+                            return run.id
+                        continue
+
+                    duplicate_streak = 0
+                    description_parts = [p for p in [item.get("title", ""), item.get("description", ""), item.get("pub_date", "")] if p]
+                    description = "\n\n".join(description_parts)
+                    await create_product_from_description(
+                        db,
+                        cfg,
+                        run,
+                        product_url=product_url,
+                        source_page_url=current_url,
+                        description=description,
+                        prompt_template=prompt_template,
+                    )
+                run.stopped_reason = "rss_feed_processed"
+                break
+
             product_links = extract_product_links(html, current_url, cfg.product_link_selector)
 
             for product_url in product_links:
@@ -93,26 +222,22 @@ async def run_parser(db: AsyncSession, config_id: int) -> int:
                     continue
 
                 duplicate_streak = 0
-                product = Product(config_id=cfg.id, product_url=product_url, source_page_url=current_url, status="processing")
-                db.add(product)
-                await db.commit()
-                await db.refresh(product)
-
                 try:
                     product_html = await fetch_html(product_url, cfg.request_timeout_seconds, cfg.use_playwright_fallback)
                     description = extract_description(product_html, cfg.product_description_selector)
-                    ai_prompt = render_prompt(prompt_template, product_url=product_url, description=description)
-                    ai_answer = await generate_ai_response(ai_prompt)
-                    product.description_text = description
-                    product.ai_response = ai_answer
-                    product.status = "complete"
-                    run.products_created += 1
-                    if cfg.telegram_enabled:
-                        product.telegram_sent = await send_product_result(product_url, ai_answer)
+                    await create_product_from_description(
+                        db,
+                        cfg,
+                        run,
+                        product_url=product_url,
+                        source_page_url=current_url,
+                        description=description,
+                        prompt_template=prompt_template,
+                    )
                 except Exception as exc:
-                    product.status = "error"
-                    product.error = str(exc)
-                await db.commit()
+                    product = Product(config_id=cfg.id, product_url=product_url, source_page_url=current_url, status="error", error=str(exc))
+                    db.add(product)
+                    await db.commit()
 
             if page_number >= cfg.max_pages:
                 break

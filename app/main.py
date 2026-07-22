@@ -1,3 +1,7 @@
+import asyncio
+import contextlib
+import logging
+
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -8,22 +12,106 @@ from app.core.config import settings
 from app.db.session import get_db, SessionLocal
 from app.models.models import ParserConfig, ParseRun, Product
 from app.services.parser import run_parser
+from app.services.telegram_bot import telegram_polling_loop
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title=settings.app_name)
 templates = Jinja2Templates(directory="app/templates")
 
+PARSER_CONFIG_ID = 1
+AUTO_PARSE_ENABLED = False
+AUTO_PARSE_INTERVAL_SECONDS = 15 * 60
+PARSER_MANUAL_ENABLED = False
+_parse_lock = asyncio.Lock()
+_runtime_tasks: list[asyncio.Task] = []
+
+
+async def run_parser_once(config_id: int = PARSER_CONFIG_ID, *, source: str = "manual") -> str:
+    if _parse_lock.locked():
+        return "Парсер уже запущен, второй запуск пропущен."
+
+    async with _parse_lock:
+        try:
+            async with SessionLocal() as db:
+                run_id = await run_parser(db, config_id)
+                run = await db.get(ParseRun, run_id)
+                if not run:
+                    return f"Парсер завершился, run_id={run_id}."
+                return (
+                    f"Парсер завершён.\n"
+                    f"Источник запуска: {source}\n"
+                    f"run_id: {run.id}\n"
+                    f"status: {run.status}\n"
+                    f"просмотрено: {run.products_seen}\n"
+                    f"создано новых: {run.products_created}\n"
+                    f"дублей: {run.products_skipped_existing}\n"
+                    f"причина остановки: {run.stopped_reason or '-'}"
+                )
+        except Exception as exc:
+            logger.exception("Parser run failed")
+            return f"Парсер завершился ошибкой: {exc}"
+
+
+async def background_run(config_id: int):
+    if not PARSER_MANUAL_ENABLED:
+        logger.info("Parser manual run skipped: disabled until prompt is finalized")
+        return
+    await run_parser_once(config_id, source="api/admin")
+
+
+async def auto_parser_loop() -> None:
+    if not AUTO_PARSE_ENABLED:
+        logger.info("Auto parser loop disabled until prompt is finalized")
+        return
+    logger.info("Auto parser loop started; interval=%ss", AUTO_PARSE_INTERVAL_SECONDS)
+    while True:
+        try:
+            await asyncio.sleep(AUTO_PARSE_INTERVAL_SECONDS)
+            result = await run_parser_once(PARSER_CONFIG_ID, source="auto_15m")
+            logger.info("Auto parser result: %s", result.replace("\n", " | "))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Auto parser loop error")
+            await asyncio.sleep(30)
+
+
+async def parser_from_telegram(source: str, chat_id: int | str) -> str:
+    return await run_parser_once(PARSER_CONFIG_ID, source=source)
+
+
+@app.on_event("startup")
+async def startup_tasks() -> None:
+    _runtime_tasks.append(asyncio.create_task(telegram_polling_loop(parser_from_telegram)))
+    if AUTO_PARSE_ENABLED:
+        _runtime_tasks.append(asyncio.create_task(auto_parser_loop()))
+
+
+@app.on_event("shutdown")
+async def shutdown_tasks() -> None:
+    for task in _runtime_tasks:
+        task.cancel()
+    for task in _runtime_tasks:
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 @app.get("/health")
 async def health():
     return {"success": True, "service": settings.app_name}
+
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin(request: Request, db: AsyncSession = Depends(get_db)):
     configs = (await db.scalars(select(ParserConfig).order_by(ParserConfig.id.desc()))).all()
     return templates.TemplateResponse("admin_list.html", {"request": request, "configs": configs})
 
+
 @app.get("/admin/configs/new", response_class=HTMLResponse)
 async def admin_new(request: Request):
     return templates.TemplateResponse("config_form.html", {"request": request, "config": None, "action": "/admin/configs"})
+
 
 async def apply_form_to_config(form, cfg: ParserConfig | None = None) -> ParserConfig:
     cfg = cfg or ParserConfig()
@@ -42,6 +130,7 @@ async def apply_form_to_config(form, cfg: ParserConfig | None = None) -> ParserC
     cfg.telegram_enabled = form.get("telegram_enabled") == "true"
     return cfg
 
+
 @app.post("/admin/configs")
 async def admin_create(request: Request, db: AsyncSession = Depends(get_db)):
     form = await request.form()
@@ -50,12 +139,14 @@ async def admin_create(request: Request, db: AsyncSession = Depends(get_db)):
     await db.commit()
     return RedirectResponse("/admin", status_code=303)
 
+
 @app.get("/admin/configs/{config_id}/edit", response_class=HTMLResponse)
 async def admin_edit(config_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     cfg = await db.get(ParserConfig, config_id)
     if not cfg:
         raise HTTPException(404, "config not found")
     return templates.TemplateResponse("config_form.html", {"request": request, "config": cfg, "action": f"/admin/configs/{config_id}"})
+
 
 @app.post("/admin/configs/{config_id}")
 async def admin_update(config_id: int, request: Request, db: AsyncSession = Depends(get_db)):
@@ -67,32 +158,37 @@ async def admin_update(config_id: int, request: Request, db: AsyncSession = Depe
     await db.commit()
     return RedirectResponse("/admin", status_code=303)
 
-async def background_run(config_id: int):
-    async with SessionLocal() as db:
-        await run_parser(db, config_id)
 
 @app.post("/admin/configs/{config_id}/parse")
 async def admin_run(config_id: int, background_tasks: BackgroundTasks):
+    if not PARSER_MANUAL_ENABLED:
+        raise HTTPException(423, "Parser is disabled until prompt is finalized")
     background_tasks.add_task(background_run, config_id)
     return RedirectResponse("/admin", status_code=303)
+
 
 @app.get("/api/configs")
 async def api_configs(db: AsyncSession = Depends(get_db)):
     return (await db.scalars(select(ParserConfig).order_by(ParserConfig.id.desc()))).all()
 
+
 @app.post("/api/parse/{config_id}")
 async def api_parse(config_id: int, background_tasks: BackgroundTasks, background: bool = True, db: AsyncSession = Depends(get_db)):
+    if not PARSER_MANUAL_ENABLED:
+        raise HTTPException(423, "Parser is disabled until prompt is finalized")
     if not await db.get(ParserConfig, config_id):
         raise HTTPException(404, "config not found")
     if background:
         background_tasks.add_task(background_run, config_id)
         return {"success": True, "status": "started_background"}
-    run_id = await run_parser(db, config_id)
-    return {"success": True, "run_id": run_id}
+    result = await run_parser_once(config_id, source="api_sync")
+    return {"success": True, "result": result}
+
 
 @app.get("/api/runs")
 async def api_runs(db: AsyncSession = Depends(get_db)):
     return (await db.scalars(select(ParseRun).order_by(ParseRun.id.desc()).limit(50))).all()
+
 
 @app.get("/api/products")
 async def api_products(db: AsyncSession = Depends(get_db)):
