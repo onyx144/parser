@@ -37,9 +37,9 @@ async def save_chat_id_to_db(chat_id: int | str, *, config_id: int = 1) -> list[
 async def telegram_polling_loop(on_parser: ParserCallback, *, poll_timeout: int = 20) -> None:
     """Long-poll Telegram updates.
 
-    Current safe mode:
-    - /start persists chat_id into parser_configs.telegram_chat_ids.
-    - /parser is intentionally disabled until the prompt is finalized.
+    Current mode:
+    - /start and /star persist chat_id into parser_configs.telegram_chat_ids.
+    - /parser runs parser config id=1 immediately.
     """
     if not settings.telegram_bot_token:
         logger.warning("Telegram bot token is empty; polling disabled")
@@ -75,19 +75,18 @@ async def telegram_polling_loop(on_parser: ParserCallback, *, poll_timeout: int 
                         continue
 
                     command = _command_name(text)
-                    if command == "/start":
-                        chat_ids = await save_chat_id_to_db(chat_id, config_id=1)
+                    if command in ("/start", "/star"):
+                        await save_chat_id_to_db(chat_id, config_id=1)
                         await send_text_to_chat(
-                            f"Готово, chat_id сохранён в БД.\n\nВсего чатов для рассылки: {len(chat_ids)}.\n\nПарсер пока отключён до финального промпта.",
+                            "ваш id добавлен",
                             chat_id=chat_id,
                             disable_web_page_preview=True,
                         )
                     elif command == "/parser":
-                        await send_text_to_chat(
-                            "Парсер пока отключён: сначала дописываем финальный prompt. После команды на запуск включу /parser и авто-запуск.",
-                            chat_id=chat_id,
-                            disable_web_page_preview=True,
-                        )
+                        await save_chat_id_to_db(chat_id, config_id=1)
+                        await send_text_to_chat("Запускаю RSS-парсер Freelancehunt сейчас.", chat_id=chat_id, disable_web_page_preview=True)
+                        result_text = await on_parser("telegram_command", chat_id)
+                        await send_text_to_chat(result_text, chat_id=chat_id, disable_web_page_preview=True)
             except asyncio.CancelledError:
                 raise
             except Exception:

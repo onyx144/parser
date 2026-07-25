@@ -1,3 +1,5 @@
+import asyncio
+import re
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from bs4 import BeautifulSoup
@@ -30,7 +32,7 @@ def clean_html_text(value: str | None) -> str:
     return soup.get_text("\n", strip=True)
 
 
-def extract_rss_items(xml_text: str, page_url: str) -> list[dict[str, str]]:
+def extract_rss_items(xml_text: str, page_url: str) -> list[dict]:
     soup = BeautifulSoup(xml_text, "xml")
     items: list[dict[str, str]] = []
     for item in soup.select("item"):
@@ -54,7 +56,7 @@ def extract_rss_items(xml_text: str, page_url: str) -> list[dict[str, str]]:
                 "title": title,
                 "description": description,
                 "pub_date": pub_date,
-                "categories": ", ".join(categories),
+                "categories": categories,
             }
         )
     return items
@@ -124,6 +126,61 @@ def load_prompt(path_str: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+PROGRAMMING_MARKERS = (
+    "программ", "програм", "разработ", "доработ", "верст", "код", "скрипт",
+    "веб-программ", "web development", "javascript", "typescript", "python",
+    "java", "backend", "frontend", "full-stack", "fullstack",
+    "llm", "парс", "автоматиза", "базы данных", "sql", "devops", "crm",
+    "wordpress", "woocommerce", "opencart", "e-commerce", "интернет-магаз", "cms",
+)
+
+PROGRAMMING_WORD_MARKERS = ("бот", "telegram", "ai", "ии", "api")
+
+
+def normalize_categories(categories=None) -> list[str]:
+    if not categories:
+        return []
+    if isinstance(categories, str):
+        raw = [part.strip() for part in categories.split(",")]
+    else:
+        raw = [str(part).strip() for part in categories if part]
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if item and item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def is_programming_project(description: str, categories=None) -> bool:
+    haystack = " ".join(normalize_categories(categories) + [description or ""]).lower()
+    if any(marker in haystack for marker in PROGRAMMING_MARKERS):
+        return True
+    return any(re.search(rf"(?<![\wа-яіїєґ]){re.escape(marker)}(?![\wа-яіїєґ])", haystack, re.IGNORECASE) for marker in PROGRAMMING_WORD_MARKERS)
+
+
+def project_category_for_db(description: str, categories=None) -> list[str] | None:
+    normalized = normalize_categories(categories)
+    if is_programming_project(description, normalized) and "Программирование" not in normalized:
+        normalized.append("Программирование")
+    return normalized or None
+
+
+def product_request_delay(cfg: ParserConfig) -> int:
+    value = getattr(cfg, "product_request_delay_seconds", None)
+    try:
+        return max(int(value or 0), 0)
+    except (TypeError, ValueError):
+        return 6
+
+
+async def maybe_sleep_between_products(cfg: ParserConfig) -> None:
+    delay = product_request_delay(cfg)
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+
 async def create_product_from_description(
     db: AsyncSession,
     cfg: ParserConfig,
@@ -133,21 +190,27 @@ async def create_product_from_description(
     source_page_url: str,
     description: str,
     prompt_template: str,
+    categories=None,
 ) -> None:
-    product = Product(config_id=cfg.id, product_url=product_url, source_page_url=source_page_url, status="processing")
+    category = project_category_for_db(description, categories)
+    is_programming = bool(category and "Программирование" in category)
+    product = Product(config_id=cfg.id, product_url=product_url, source_page_url=source_page_url, status="processing", category=category)
     db.add(product)
     await db.commit()
     await db.refresh(product)
 
     try:
-        ai_prompt = render_prompt(prompt_template, product_url=product_url, description=description)
-        ai_answer = await generate_ai_response(ai_prompt)
         product.description_text = description
+        if is_programming:
+            ai_prompt = render_prompt(prompt_template, product_url=product_url, description=description, categories=category)
+            ai_answer = await generate_ai_response(ai_prompt)
+        else:
+            ai_answer = "/*не касается программирования*/"
         product.ai_response = ai_answer
         product.status = "complete"
         run.products_created += 1
         if cfg.telegram_enabled:
-            product.telegram_sent = await send_product_result(product_url, ai_answer, description, chat_ids=cfg.telegram_chat_ids)
+            product.telegram_sent = await send_product_result(product_url, ai_answer, description, chat_ids=cfg.telegram_chat_ids, category=category)
     except Exception as exc:
         product.status = "error"
         product.error = str(exc)
@@ -192,7 +255,10 @@ async def run_parser(db: AsyncSession, config_id: int) -> int:
                         continue
 
                     duplicate_streak = 0
-                    description_parts = [p for p in [item.get("title", ""), item.get("description", ""), item.get("pub_date", "")] if p]
+                    await maybe_sleep_between_products(cfg)
+                    raw_categories = item.get("categories") or []
+                    category_line = ", ".join(normalize_categories(raw_categories))
+                    description_parts = [p for p in [item.get("title", ""), f"Категории: {category_line}" if category_line else "", item.get("description", ""), item.get("pub_date", "")] if p]
                     description = "\n\n".join(description_parts)
                     await create_product_from_description(
                         db,
@@ -202,6 +268,7 @@ async def run_parser(db: AsyncSession, config_id: int) -> int:
                         source_page_url=current_url,
                         description=description,
                         prompt_template=prompt_template,
+                        categories=raw_categories,
                     )
                 run.stopped_reason = "rss_feed_processed"
                 break
@@ -223,6 +290,7 @@ async def run_parser(db: AsyncSession, config_id: int) -> int:
 
                 duplicate_streak = 0
                 try:
+                    await maybe_sleep_between_products(cfg)
                     product_html = await fetch_html(product_url, cfg.request_timeout_seconds, cfg.use_playwright_fallback)
                     description = extract_description(product_html, cfg.product_description_selector)
                     await create_product_from_description(
@@ -233,6 +301,7 @@ async def run_parser(db: AsyncSession, config_id: int) -> int:
                         source_page_url=current_url,
                         description=description,
                         prompt_template=prompt_template,
+                        categories=cfg.category,
                     )
                 except Exception as exc:
                     product = Product(config_id=cfg.id, product_url=product_url, source_page_url=current_url, status="error", error=str(exc))

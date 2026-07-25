@@ -89,6 +89,7 @@ async def send_product_result(
     description: str | None = None,
     *,
     chat_ids=None,
+    category=None,
 ) -> bool:
     target_chat_ids = normalize_chat_ids(chat_ids)
     if not settings.telegram_bot_token or not target_chat_ids:

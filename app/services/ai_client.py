@@ -1,10 +1,55 @@
+import re
 import asyncio
 import os
 from app.core.config import settings
 
 
-def render_prompt(template: str, *, product_url: str, description: str) -> str:
-    return template.format(product_url=product_url, description=description)
+def detect_project_language(description: str | None) -> str:
+    """Return target response language: ukrainian, russian, or english."""
+    text = description or ""
+    # Do not let internal Russian service labels bias language detection.
+    text = "\n".join(line for line in text.splitlines() if not line.strip().lower().startswith("категории:"))
+    lower = text.lower()
+
+    ukrainian_markers = (
+        "і", "ї", "є", "ґ", "потрібно", "потрібен", "потрібна", "необхідно",
+        "розроб", "додаток", "застосунок", "сайт", "шукаємо", "замовник",
+        "україн", "створити", "налаштувати", "виправити", "доробити",
+    )
+    russian_markers = (
+        "нужно", "нужен", "нужна", "необходимо", "требуется", "разработ",
+        "приложение", "сайт", "ищем", "заказчик", "русск", "создать", "настроить",
+        "исправить", "доработать",
+    )
+
+    cyrillic_count = len(re.findall(r"[а-яіїєґ]", lower, re.IGNORECASE))
+    latin_count = len(re.findall(r"[a-z]", lower, re.IGNORECASE))
+
+    if any(marker in lower for marker in ukrainian_markers):
+        return "ukrainian"
+    if cyrillic_count == 0 and latin_count > 0:
+        return "english"
+    if cyrillic_count > 0 and any(marker in lower for marker in russian_markers):
+        return "russian"
+    if cyrillic_count > 0:
+        return "russian"
+    return "english"
+
+
+def language_instruction(language: str) -> str:
+    if language == "ukrainian":
+        return "CRITICAL OUTPUT LANGUAGE: Write the final bid in Ukrainian only. Do not write Russian."
+    if language == "english":
+        return "CRITICAL OUTPUT LANGUAGE: Write the final bid in English only. Do not write Russian."
+    return "CRITICAL OUTPUT LANGUAGE: Write the final bid in Russian only."
+
+
+def render_prompt(template: str, *, product_url: str, description: str, categories=None) -> str:
+    categories_text = ", ".join(categories or []) if isinstance(categories, list) else (categories or "")
+    project_language = detect_project_language(description)
+    rendered = template.format(product_url=product_url, description=description, categories=categories_text or "null")
+    instruction = language_instruction(project_language)
+    return f"{instruction}\n\n{rendered}\n\n{instruction}\nFinal answer must follow this output language instruction exactly."
 
 
 async def generate_with_hermes(prompt: str) -> str:
