@@ -52,6 +52,30 @@ def render_prompt(template: str, *, product_url: str, description: str, categori
     return f"{instruction}\n\n{rendered}\n\n{instruction}\nFinal answer must follow this output language instruction exactly."
 
 
+def normalize_generated_response(text: str | None) -> str:
+    """Keep bid formatting compact for Telegram/Freelancehunt: no blank lines, no greeting line split."""
+    if not text:
+        return ""
+    value = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    # Remove empty lines: user wants one \n only, without blank spacer rows.
+    lines = [line.strip() for line in value.split("\n") if line.strip()]
+    value = "\n".join(lines)
+    # Greeting must not be "Здравствуйте.\n..." or "Вітаю.\n...".
+    value = re.sub(
+        r"^(Здравствуйте|Здравствуй|Вітаю|Доброго дня|Добрий день|Hello|Hi)[.!]?\s*\n+\s*",
+        r"\1, ",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(
+        r"^(Здравствуйте|Здравствуй|Вітаю|Доброго дня|Добрий день|Hello|Hi)[.!]\s+",
+        r"\1, ",
+        value,
+        flags=re.IGNORECASE,
+    )
+    return value.strip()
+
+
 async def generate_with_hermes(prompt: str) -> str:
     """Generate a response through the local Hermes CLI when external AI key is empty."""
     env = os.environ.copy()
@@ -86,7 +110,7 @@ async def generate_with_hermes(prompt: str) -> str:
         if line.startswith("Warning: Unknown toolsets:"):
             continue
         clean_lines.append(line)
-    return "\n".join(clean_lines).strip()
+    return normalize_generated_response("\n".join(clean_lines).strip())
 
 
 async def generate_ai_response(prompt: str) -> str:
@@ -101,4 +125,4 @@ async def generate_ai_response(prompt: str) -> str:
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
     )
-    return response.choices[0].message.content or ""
+    return normalize_generated_response(response.choices[0].message.content or "")
