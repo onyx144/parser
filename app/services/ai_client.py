@@ -73,6 +73,11 @@ def normalize_generated_response(text: str | None) -> str:
         value,
         flags=re.IGNORECASE,
     )
+    value = re.sub(
+        r"(?im)^\s*(github\s*:?\s*)?github\.com/onyx144\s*$",
+        "git: github.com/onyx144",
+        value,
+    )
     return value.strip()
 
 

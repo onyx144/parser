@@ -127,14 +127,24 @@ def load_prompt(path_str: str) -> str:
 
 
 PROGRAMMING_MARKERS = (
-    "программ", "програм", "разработ", "доработ", "верст", "код", "скрипт",
-    "веб-программ", "web development", "javascript", "typescript", "python",
-    "java", "backend", "frontend", "full-stack", "fullstack",
-    "llm", "парс", "автоматиза", "базы данных", "sql", "devops", "crm",
-    "wordpress", "woocommerce", "opencart", "e-commerce", "интернет-магаз", "cms",
+    "программ", "програм", "кодинг", "написать код", "исправить код", "доработать код",
+    "верст", "скрипт", "веб-программ", "web development", "javascript", "typescript",
+    "python", "php", "node", "node.js", "nestjs", "nest.js", "sails", "sails.js",
+    "express", "express.js", "react", "next.js", "nextjs", "vue", "angular",
+    "backend", "back-end", "frontend", "front-end", "full-stack", "fullstack",
+    "fastapi", "django", "flask", "laravel", "yii", "symfony",
+    "llm", "парс", "автоматиза", "базы данных", "база данных", "sql", "postgres",
+    "mysql", "mongodb", "devops", "crm", "интеграц", "webhook", "вебхук",
+    "wordpress", "word press", "woocommerce", "opencart", "open cart", "e-commerce",
+    "интернет-магаз", "cms", "плагин", "plugin", "модуль opencart", "модуль wordpress",
 )
 
-PROGRAMMING_WORD_MARKERS = ("бот", "telegram", "ai", "ии", "api")
+PROGRAMMING_WORD_MARKERS = ("бот", "telegram", "api", "ai", "ии", "jsx", "tsx", "html", "css")
+NON_PROGRAMMING_NEGATIVE_MARKERS = (
+    "дизайн", "логотип", "баннер", "презентац", "копирайт", "текст", "перевод",
+    "обработка фото", "ретуш", "монтаж", "видео", "аудио", "озвуч", "smm",
+    "таргет", "реклама", "маркетинг", "seo", "контент", "пост", "сторис", "креатив",
+)
 
 
 def normalize_categories(categories=None) -> list[str]:
@@ -155,9 +165,25 @@ def normalize_categories(categories=None) -> list[str]:
 
 def is_programming_project(description: str, categories=None) -> bool:
     haystack = " ".join(normalize_categories(categories) + [description or ""]).lower()
-    if any(marker in haystack for marker in PROGRAMMING_MARKERS):
-        return True
-    return any(re.search(rf"(?<![\wа-яіїєґ]){re.escape(marker)}(?![\wа-яіїєґ])", haystack, re.IGNORECASE) for marker in PROGRAMMING_WORD_MARKERS)
+    has_positive = any(marker in haystack for marker in PROGRAMMING_MARKERS) or any(
+        re.search(rf"(?<![\wа-яіїєґ]){re.escape(marker)}(?![\wа-яіїєґ])", haystack, re.IGNORECASE)
+        for marker in PROGRAMMING_WORD_MARKERS
+    )
+    if not has_positive:
+        return False
+
+    # If the task is clearly creative/marketing/text work and only weak web words are present,
+    # do not send it to Telegram as a programming order.
+    has_negative = any(marker in haystack for marker in NON_PROGRAMMING_NEGATIVE_MARKERS)
+    strong_dev_markers = (
+        "python", "javascript", "typescript", "php", "node", "react", "next.js", "backend",
+        "frontend", "fastapi", "django", "flask", "laravel", "wordpress", "woocommerce",
+        "opencart", "api", "sql", "postgres", "mysql", "бот", "скрипт", "парс", "плагин",
+    )
+    has_strong_dev = any(marker in haystack for marker in strong_dev_markers)
+    if has_negative and not has_strong_dev:
+        return False
+    return True
 
 
 def project_category_for_db(description: str, categories=None) -> list[str] | None:
@@ -209,8 +235,10 @@ async def create_product_from_description(
         product.ai_response = ai_answer
         product.status = "complete"
         run.products_created += 1
-        if cfg.telegram_enabled:
+        if cfg.telegram_enabled and is_programming:
             product.telegram_sent = await send_product_result(product_url, ai_answer, description, chat_ids=cfg.telegram_chat_ids, category=category)
+        elif not is_programming:
+            product.telegram_sent = False
     except Exception as exc:
         product.status = "error"
         product.error = str(exc)
