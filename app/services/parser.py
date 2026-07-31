@@ -135,6 +135,8 @@ PROGRAMMING_MARKERS = (
     "fastapi", "django", "flask", "laravel", "yii", "symfony",
     "llm", "парс", "автоматиза", "базы данных", "база данных", "sql", "postgres",
     "mysql", "mongodb", "devops", "crm", "интеграц", "webhook", "вебхук",
+    "n8n", "hermes", "ai-бот", "ии-бот", "іі-бот", "чат-бот", "chatbot", "ассистент",
+    "ai assistant", "ai agent", "ии агент", "ai агент",
     "wordpress", "word press", "woocommerce", "opencart", "open cart", "e-commerce",
     "интернет-магаз", "cms", "плагин", "plugin", "модуль opencart", "модуль wordpress",
 )
@@ -179,6 +181,7 @@ def is_programming_project(description: str, categories=None) -> bool:
         "python", "javascript", "typescript", "php", "node", "react", "next.js", "backend",
         "frontend", "fastapi", "django", "flask", "laravel", "wordpress", "woocommerce",
         "opencart", "api", "sql", "postgres", "mysql", "бот", "скрипт", "парс", "плагин",
+        "n8n", "hermes", "ai-бот", "ии-бот", "іі-бот", "чат-бот", "chatbot", "ассистент",
     )
     has_strong_dev = any(marker in haystack for marker in strong_dev_markers)
     if has_negative and not has_strong_dev:
