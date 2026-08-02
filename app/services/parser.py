@@ -128,24 +128,41 @@ def load_prompt(path_str: str) -> str:
 
 PROGRAMMING_MARKERS = (
     "программ", "програм", "кодинг", "написать код", "исправить код", "доработать код",
-    "верст", "скрипт", "веб-программ", "web development", "javascript", "typescript",
+    "скрипт", "веб-программ", "web development", "javascript", "typescript",
     "python", "php", "node", "node.js", "nestjs", "nest.js", "sails", "sails.js",
     "express", "express.js", "react", "next.js", "nextjs", "vue", "angular",
     "backend", "back-end", "frontend", "front-end", "full-stack", "fullstack",
     "fastapi", "django", "flask", "laravel", "yii", "symfony",
-    "llm", "парс", "автоматиза", "базы данных", "база данных", "sql", "postgres",
-    "mysql", "mongodb", "devops", "crm", "интеграц", "webhook", "вебхук",
-    "n8n", "hermes", "ai-бот", "ии-бот", "іі-бот", "чат-бот", "chatbot", "ассистент",
-    "ai assistant", "ai agent", "ии агент", "ai агент",
+    "llm", "rag", "парс", "базы данных", "база данных", "sql", "postgres",
+    "mysql", "mongodb", "devops", "интеграц", "webhook", "вебхук",
+    "n8n", "hermes", "ai-бот", "ии-бот", "іі-бот", "чат-бот", "chatbot",
+    "ai assistant", "ai agent", "ии агент", "ai агент", "ии-систем", "ai-систем",
     "wordpress", "word press", "woocommerce", "opencart", "open cart", "e-commerce",
     "интернет-магаз", "cms", "плагин", "plugin", "модуль opencart", "модуль wordpress",
+    "html css", "html/css", "css html", "верстка сайта", "верстка лендинга", "лендинг",
 )
 
-PROGRAMMING_WORD_MARKERS = ("бот", "telegram", "api", "ai", "ии", "jsx", "tsx", "html", "css")
+PROGRAMMING_WORD_MARKERS = ("бот", "telegram", "api", "jsx", "tsx")
+PROGRAMMING_CATEGORY_MARKERS = (
+    "веб-программирование", "разработка ботов", "javascript", "typescript", "python",
+    "php", "парсинг данных", "базы данных", "devops", "cms", "wordpress",
+    "opencart", "woocommerce", "криптовалюта", "blockchain", "ai и машинное обучение",
+)
 NON_PROGRAMMING_NEGATIVE_MARKERS = (
     "дизайн", "логотип", "баннер", "презентац", "копирайт", "текст", "перевод",
     "обработка фото", "ретуш", "монтаж", "видео", "аудио", "озвуч", "smm",
     "таргет", "реклама", "маркетинг", "seo", "контент", "пост", "сторис", "креатив",
+    "инстаграм", "instagram", "canva", "figma", "after effects", "анимац", "моушн",
+    "обложка", "книга", "журнал", "эскиз", "тату", "рисунок", "иллюстрац",
+    "google ads", "google shopping", "ppc", "контекстная реклама", "административн",
+    "ассистента", "профиль", "roblox", "age verification", "удаленный доступ", "бухгалтер",
+)
+NON_PROGRAMMING_CATEGORY_MARKERS = (
+    "реклама", "социальных медиа", "дизайн", "живопись", "графика", "анимация",
+    "векторная графика", "обработка видео", "аудио", "видео монтаж", "ai в дизайне",
+    "ai cоздание видео", "контекстная реклама", "копирайтинг", "контент-менеджер",
+    "маркетинговые исследования", "поиск и сбор информации", "обработка данных",
+    "работа с клиентами", "инжиниринг", "машино", "приборостроение",
 )
 
 
@@ -166,25 +183,33 @@ def normalize_categories(categories=None) -> list[str]:
 
 
 def is_programming_project(description: str, categories=None) -> bool:
-    haystack = " ".join(normalize_categories(categories) + [description or ""]).lower()
-    has_positive = any(marker in haystack for marker in PROGRAMMING_MARKERS) or any(
+    normalized_categories = [c for c in normalize_categories(categories) if c != "Программирование"]
+    category_text = " ".join(normalized_categories).lower()
+    description_text = (description or "").lower()
+    haystack = " ".join([category_text, description_text]).strip()
+
+    category_is_programming = any(marker in category_text for marker in PROGRAMMING_CATEGORY_MARKERS)
+    category_is_non_programming = any(marker in category_text for marker in NON_PROGRAMMING_CATEGORY_MARKERS)
+    has_positive = category_is_programming or any(marker in haystack for marker in PROGRAMMING_MARKERS) or any(
         re.search(rf"(?<![\wа-яіїєґ]){re.escape(marker)}(?![\wа-яіїєґ])", haystack, re.IGNORECASE)
         for marker in PROGRAMMING_WORD_MARKERS
     )
     if not has_positive:
         return False
 
-    # If the task is clearly creative/marketing/text work and only weak web words are present,
-    # do not send it to Telegram as a programming order.
-    has_negative = any(marker in haystack for marker in NON_PROGRAMMING_NEGATIVE_MARKERS)
+    has_negative = category_is_non_programming or any(marker in haystack for marker in NON_PROGRAMMING_NEGATIVE_MARKERS)
     strong_dev_markers = (
         "python", "javascript", "typescript", "php", "node", "react", "next.js", "backend",
         "frontend", "fastapi", "django", "flask", "laravel", "wordpress", "woocommerce",
-        "opencart", "api", "sql", "postgres", "mysql", "бот", "скрипт", "парс", "плагин",
-        "n8n", "hermes", "ai-бот", "ии-бот", "іі-бот", "чат-бот", "chatbot", "ассистент",
+        "opencart", "api", "sql", "postgres", "mysql", "бот", "telegram", "скрипт", "парс",
+        "плагин", "n8n", "hermes", "ai-бот", "ии-бот", "іі-бот", "чат-бот", "chatbot",
+        "llm", "rag", "webhook", "вебхук", "crm", "cms", "jsx", "tsx",
     )
-    has_strong_dev = any(marker in haystack for marker in strong_dev_markers)
+    has_strong_dev = category_is_programming or any(marker in haystack for marker in strong_dev_markers)
     if has_negative and not has_strong_dev:
+        return False
+    # Explicit non-programming categories win over weak generic words like AI/automation/project/site.
+    if category_is_non_programming and not has_strong_dev:
         return False
     return True
 

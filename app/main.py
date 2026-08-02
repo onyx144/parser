@@ -21,7 +21,7 @@ templates = Jinja2Templates(directory="app/templates")
 
 PARSER_CONFIG_ID = 1
 AUTO_PARSE_ENABLED = True
-AUTO_PARSE_INTERVAL_SECONDS = 30 * 60
+AUTO_PARSE_INTERVAL_SECONDS = 5 * 60
 PARSER_MANUAL_ENABLED = True
 _parse_lock = asyncio.Lock()
 _runtime_tasks: list[asyncio.Task] = []
@@ -77,7 +77,7 @@ async def auto_parser_loop() -> None:
             if not await config_has_chat_ids(PARSER_CONFIG_ID):
                 logger.info("Auto parser skipped: no Telegram chat ids saved in DB yet")
                 continue
-            result = await run_parser_once(PARSER_CONFIG_ID, source="auto_30m")
+            result = await run_parser_once(PARSER_CONFIG_ID, source="auto_5m")
             logger.info("Auto parser result: %s", result.replace("\n", " | "))
         except asyncio.CancelledError:
             raise
