@@ -26,7 +26,7 @@ PARSER_MANUAL_ENABLED = True
 _parse_lock = asyncio.Lock()
 _runtime_tasks: list[asyncio.Task] = []
 
-# Run parser once
+# Run parser 
 async def run_parser_once(config_id: int = PARSER_CONFIG_ID, *, source: str = "manual") -> str:
     if _parse_lock.locked():
         return "Парсер уже запущен, второй запуск пропущен."
